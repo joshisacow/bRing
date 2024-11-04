@@ -2,3 +2,4 @@ Flask
 Flask-RESTful
 python-dotenv
 flask-cors
+boto3
