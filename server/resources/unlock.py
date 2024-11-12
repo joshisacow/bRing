@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 class Unlock(Resource):
     def get(self):
-        s3.download_image('bring-photos', 'verify.png')
+        # s3.download_image('bring-photos', 'verify.png')
 
         return "Unlock", 200
 

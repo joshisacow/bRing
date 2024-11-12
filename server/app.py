@@ -25,17 +25,11 @@ import resources.unlock as Unlock
 
 class Main(Resource):
     def get(self):
-        return "Nav-E API", 200
+        return "bRing API", 200
 
 api.add_resource(Main, '/')
 api.add_resource(Guest.GuestVerification, '/guest-verification')
 api.add_resource(Unlock.Unlock, '/unlock')
 
-
-# home route
-@app.route("/")
-def home():
-    return 'bRing API', 200
-
 if __name__ == '__main__':
-    app.run(port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=True)
