@@ -7,10 +7,13 @@ app = Flask(__name__)
 class GuestVerification(Resource):
     def post(self):
         # store image and send to ML model + app
-        data = dict(request.form)
-        image = data['image']
+        file = request.files['image']
+        print(file)
+        file.save('verify.png')
+        # data = dict(request.form)
+        # image = data['image']
 
         # upload to aws
-        s3.upload_image(image, 'bring-photos', 'verify.png')
+        # s3.upload_image(image, 'bring-photos', 'verify.png')
 
         return "Success", 200
