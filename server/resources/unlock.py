@@ -5,6 +5,8 @@ import requests
 
 app = Flask(__name__)
 
+TARGET_URL = "http://172.28.116.119/open-door"
+
 class Unlock(Resource):
     def get(self):
         # s3.download_image('bring-photos', 'verify.png')
@@ -13,7 +15,6 @@ class Unlock(Resource):
 
     def post(self):
         # send unlock signal to device
-        # resp = requests.post('http://172.28.116.119/open-door')
-        resp = requests.post('https://b-ring.vercel.app/api/proxy/open-door')
+        response = requests.post(TARGET_URL)
 
-        return resp.text, resp.status_code
+        return response.text, response.status_code
