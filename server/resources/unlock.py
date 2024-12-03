@@ -1,7 +1,7 @@
 from flask import Flask
 from flask_restful import Resource, reqparse, request
 from .datastore import s3
-3
+import requests
 
 app = Flask(__name__)
 
@@ -13,4 +13,6 @@ class Unlock(Resource):
 
     def post(self):
         # send unlock signal to device
-        return "Success", 200
+        resp = requests.post('http://172.28.116.119/open-door')
+
+        return resp.text, resp.status_code
