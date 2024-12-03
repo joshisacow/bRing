@@ -13,6 +13,7 @@ class Unlock(Resource):
 
     def post(self):
         # send unlock signal to device
-        resp = requests.post('http://172.28.116.119/open-door')
+        # resp = requests.post('http://172.28.116.119/open-door')
+        resp = requests.post('https://b-ring.vercel.app/api/proxy/open-door')
 
         return resp.text, resp.status_code
