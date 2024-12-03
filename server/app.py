@@ -22,6 +22,7 @@ from dotenv import load_dotenv, find_dotenv
 # import resources
 import resources.guestVerification as Guest 
 import resources.unlock as Unlock
+import resources.login as Login
 
 class Main(Resource):
     def get(self):
@@ -30,6 +31,8 @@ class Main(Resource):
 api.add_resource(Main, '/')
 api.add_resource(Guest.GuestVerification, '/guest-verification')
 api.add_resource(Unlock.Unlock, '/unlock')
+api.add_resource(Login.Login, '/login')
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
