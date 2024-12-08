@@ -63,6 +63,7 @@ class GuestVerification(Resource):
             with state_lock:
                 state = False
             if os.path.exists('resources/rgb565_images/test.png'):
+                # return state, 200
                 return send_file('resources/rgb565_images/test.png', mimetype='image/png')
             else:
                 return "No image", 200

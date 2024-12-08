@@ -10,7 +10,7 @@ TARGET_URL = "http://172.28.116.119/open-door"
 class Unlock(Resource):
     def get(self):
         # s3.download_image('bring-photos', 'verify.png')
-
+ 
         return "Unlock", 200
 
     def post(self):
