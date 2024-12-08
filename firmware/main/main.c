@@ -248,7 +248,7 @@ void camera_init() {
         .pixel_format = PIXFORMAT_RGB565, //
         .frame_size = FRAMESIZE_QQVGA,  // Resolution (e.g., QVGA, VGA)
         .jpeg_quality = 12,           // JPEG quality (1-63, lower is better quality)
-        .fb_count = 2,                // Framebuffers count
+        .fb_count = 1,                // Framebuffers count
         .fb_location = CAMERA_FB_IN_DRAM, 
         .grab_mode = CAMERA_GRAB_LATEST,
     };
