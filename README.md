@@ -4,7 +4,7 @@ Duke ECE / CS 655 Course Project - Josh, Bryant, Emily
 
 ### Overview
 
-This is the repository for the bRing project. It is an end-to-end remote wifi-based doorbell system. The system consists of an ESP32 and various connected hardware components like a doorbell, motor, camera, etc., a Flask HTTP server, and a Swift mobile app that the end users can use to approve unlock requests.
+bRing is an end-to-end remote wifi-based doorbell system. The system consists of an ESP32 and various connected hardware components like a doorbell, motor, camera, etc., a Flask HTTP server, and a Swift mobile app that the end users can use to approve unlock requests.
 
 The basic workflow consists of:
 1. The doorbell button is pressed
