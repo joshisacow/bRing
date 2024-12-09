@@ -7,6 +7,7 @@
 
 #include <esp_log.h> //logging functionality with levels and tags
 #include <rom/ets_sys.h> //Provides low-level timing utilities, such as ets_delay_us(), which can pause execution for microsecond-level delays.
+#include "esp_timer.h" //for the timer for the button isr handler
 #include <inttypes.h> // Add this to use PRIi64
 
 //Wi-Fi Management
@@ -22,24 +23,20 @@
 #include "esp_camera.h" //Provides functionality for initializing and interacting with camera modules like the OV5640 or OV2640. Used for image capture and configuration of the camera hardware.
 
 // PWM (Pulse Width Modulation) Driver
-// #include "driver/mcpwm.h" //Enables PWM functionality for controlling motors, LEDs, or other devices.
-// #include "soc/mcpwm_periph.h" //Contains low-level details about MCPWM (Motor Control PWM) hardware peripherals.
 #include "driver/ledc.h"
 
 #include <esp_http_client.h>  // for uploading the image
-
 #include <esp_http_server.h> //for reaading the open door request
+#include "server_cert.h"  //server certificate bc HTTPS
 
-#define HTTPD_MAX_REQ_HDR_LEN 4096
-
-/* Max supported HTTP request URI length */
-#define HTTPD_MAX_URI_LEN 1024
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+#define SERVER_URL "http://10.197.43.108:8080"  // Replace with actual server IP
+
 #define BUTTON_PIN 38 // GPIO pin for the button
-#define SERVO_PIN GPIO_NUM_45  // GPIO pin for the servo motor
 
 #define XCLK_GPIO_NUM    4  // Example GPIO for external clock (XC on module)
 #define PCLK_GPIO_NUM    7 // Pixel clock pin (PC on module)
@@ -58,15 +55,20 @@
 #define D6_GPIO_NUM      33 //D8 on module 
 #define D7_GPIO_NUM      34 //D9 on module 
 
+#define SERVO_PIN GPIO_NUM_45  // GPIO pin for the servo motor
+
 // Servo parameters for continuous rotation
 #define SERVO_STOP_PULSEWIDTH_US 1500  // Pulse width for no movement (neutral position)
 #define SERVO_FORWARD_PULSEWIDTH_US 2500 // Pulse width for forward movement
 #define SERVO_REVERSE_PULSEWIDTH_US 500  // Pulse width for reverse movement
 
-#define SERVER_URL "http://b-ring.vercel.app"  // Replace with actual server IP
+static int64_t last_press_time = 0; 
 
 // Global boolean flag set by ISR
 volatile bool button_pressed = false;
+volatile bool turn_motor = false;
+
+static EventGroupHandle_t s_wifi_event_group;
 
 // tags for debugging
 static const char* TAG_WIFI = "wifi_station";
@@ -75,8 +77,6 @@ static const char* TAG_HTTP = "http_client";
 static const char* TAG_CAMERA = "camera";
 static const char* TAG_MOTOR = "motor";
 static const char* TAG_SERVER = "http_server";
-
-static EventGroupHandle_t s_wifi_event_group;
 
 //wifi setup stuff
 
@@ -125,10 +125,43 @@ void wifi_init_sta(void) {
     }
 }
 
+void start_http_server() {
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    config.server_port = 80;  // port set to 80
+
+    ESP_LOGI(TAG_SERVER, "Starting HTTP server on port %d", config.server_port);
+
+    // Start the HTTP server
+    if (httpd_start(&server, &config) == ESP_OK) {
+        // Set up the URI handler
+        httpd_uri_t open_door_uri = {
+            .uri       = "/open-door",
+            .method    = HTTP_POST,
+            .handler   = open_door_handler, 
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &open_door_uri);
+    }
+}
+
 //button set up stuff
 
 // Button ISR to set the global boolean flag
 static void IRAM_ATTR button_isr_handler(void* arg) {
+    // Get the current time in microseconds
+    int64_t current_time = esp_timer_get_time();
+
+    // Check if the button was pressed within the last 2 seconds (2,000,000 microseconds)
+    if (current_time - last_press_time < 2000000) {
+        // Ignore this press
+        return;
+    }
+
+    // Update the last press time
+    last_press_time = current_time;
+
     button_pressed = true;  // Set the flag to true when the button is pressed
 }
 
@@ -147,55 +180,47 @@ void button_init() {
     gpio_isr_handler_add(BUTTON_PIN, button_isr_handler, NULL);
 }
 
+//camera set up stuff
+
+// Upload picture to server
+void upload_picture(camera_fb_t *pic) {
+    esp_http_client_config_t config = {
+        .url = SERVER_URL "/guest-verification",
+        .buffer_size = 40 * 1024,       // Adjust this value to handle larger payloads
+        .buffer_size_tx = 40 * 1024,    // Adjust for transmission buffer size
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
+
+    // Set the POST body
+    esp_http_client_set_post_field(client, (const char *)pic->buf, pic->len);
+
+    // Execute the POST request
+    esp_err_t err = esp_http_client_perform(client);
+    if (err != ESP_OK) {
+        ESP_LOGE("http_client", "HTTP POST failed: %s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG_HTTP, "Finished uploading picture");
+}
+
 void take_picture() {
     ESP_LOGI(TAG_CAMERA, "Capturing picture...");
     camera_fb_t *pic = esp_camera_fb_get(); // Capture a frame
     if (!pic) {
         ESP_LOGE(TAG_CAMERA, "Failed to capture picture");
-        return;
     }
     
     ESP_LOGI(TAG_CAMERA, "Picture taken! Size: %zu bytes", pic->len);
     
     // Process the image here (e.g., send it to a server or save to SD card)
-    // send_picture_to_server(pic->buf, pic->len);
 
     esp_camera_fb_return(pic); // Return the frame buffer
-}
 
-// Function to set the servo pulse width
-void set_servo_pulsewidth(uint32_t pulse_width) {
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, pulse_width);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-}
-
-void open_door() {
-     for(int i=0; i<5; i++) {
-        // Spin forward for 3 full rotations (approx. 3 seconds per rotation)
-        set_servo_pulsewidth(SERVO_FORWARD_PULSEWIDTH_US);
-        vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-        set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-        vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
-
-        // Spin backward for 3 full rotations
-        set_servo_pulsewidth(SERVO_REVERSE_PULSEWIDTH_US);
-        vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-        set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-        vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
-    }
-}
-
-void button_task(void *pvParameter) {
-    while (1) {
-        if (gpio_get_level(BUTTON_PIN) == 0) {
-            ESP_LOGI(TAG_BUTTON, "Button pressed, taking picture");
-            take_picture();
-            ESP_LOGI(TAG_MOTOR, "Button pressed, moving motor");
-            open_door();
-            vTaskDelay(1000 / portTICK_PERIOD_MS);  // Debounce delay
-        }
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
+    upload_picture(pic); // Upload captured image
 }
 
 // Initialize Camera
@@ -220,8 +245,8 @@ void camera_init() {
         .pin_pwdn = PWDN_GPIO_NUM,
         .pin_reset = RESET_GPIO_NUM,
         .xclk_freq_hz = 20000000, // 20 MHz clock frequency
-        .pixel_format = PIXFORMAT_JPEG, // Use JPEG format for images
-        .frame_size = FRAMESIZE_QVGA,  // Resolution (e.g., QVGA, VGA)
+        .pixel_format = PIXFORMAT_RGB565, //
+        .frame_size = FRAMESIZE_QQVGA,  // Resolution (e.g., QVGA, VGA)
         .jpeg_quality = 12,           // JPEG quality (1-63, lower is better quality)
         .fb_count = 1,                // Framebuffers count
         .fb_location = CAMERA_FB_IN_DRAM, 
@@ -243,79 +268,44 @@ void camera_init() {
     }
 }
 
-// Upload picture to server
-void upload_picture(camera_fb_t *pic) {
-    esp_http_client_config_t config = {
-        .url = SERVER_URL "/guest-verification",
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
+//motor set up stuff
 
-    esp_http_client_set_method(client, HTTP_METHOD_POST);
-    esp_http_client_set_header(client, "Content-Type", "image/jpeg");
-    esp_http_client_set_post_field(client, (const char *)pic->buf, pic->len);
-
-    esp_err_t err = esp_http_client_perform(client);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG_HTTP, "HTTP POST Status = %d, content_length = %" PRIi64,
-         esp_http_client_get_status_code(client),
-         esp_http_client_get_content_length(client));
-    } else {
-        ESP_LOGE(TAG_HTTP, "HTTP POST request failed: %s", esp_err_to_name(err));
-    }
-
-    esp_http_client_cleanup(client);
+// Function to set the servo pulse width
+void set_servo_pulsewidth(uint32_t pulse_width) {
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, pulse_width);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
-// // Function to set the servo pulse width
-// void set_servo_pulsewidth(uint32_t pulse_width) {
-//     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, pulse_width);
-//     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-// }
+void open_door() {
+    // Spin forward for 3 full rotations (approx. 3 seconds per rotation)
+    // ESP_LOGI(TAG_MOTOR, "Opening door...");
+    // set_servo_pulsewidth(SERVO_FORWARD_PULSEWIDTH_US);
+    // ESP_LOGI(TAG_MOTOR, "hi123");
 
-// void open_door() {
-//      for(int i=0; i<5; i++) {
-//         // Spin forward for 3 full rotations (approx. 3 seconds per rotation)
-//         set_servo_pulsewidth(SERVO_FORWARD_PULSEWIDTH_US);
-//         vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-//         set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-//         vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
+    // vTaskDelay(pdMS_TO_TICKS(1000)); // 9 seconds for 3 rotations
+    // ESP_LOGI(TAG_MOTOR, "bye123");
 
-//         // Spin backward for 3 full rotations
-//         set_servo_pulsewidth(SERVO_REVERSE_PULSEWIDTH_US);
-//         vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-//         set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-//         vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
-//     }
-// }
+    // set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
+    // vTaskDelay(pdMS_TO_TICKS(1000)); // Pause for 5 seconds
 
-esp_err_t door_open_handler(httpd_req_t *req) {
+    // Spin backward for 3 full rotations
+    set_servo_pulsewidth(SERVO_REVERSE_PULSEWIDTH_US);
+    vTaskDelay(pdMS_TO_TICKS(8000)); // 9 seconds for 3 rotations
+
+    set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
+    vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
+}
+
+esp_err_t open_door_handler(httpd_req_t *req) {
     // Logic to open the door
-    ESP_LOGI("HTTP_SERVER", "Door open request received");
 
-    // Add your logic to open the door (e.g., call `open_door()` function)
-    open_door();
+    turn_motor = true;
     
     // Respond to the HTTP client
     const char *resp = "Door is now open!";
     httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+
     return ESP_OK;
-}
-
-void start_http_server() {
-    httpd_handle_t server = NULL;
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-
-    // Start the HTTP server
-    if (httpd_start(&server, &config) == ESP_OK) {
-        // Set up the URI handler
-        httpd_uri_t door_open_uri = {
-            .uri       = "/open-door",
-            .method    = HTTP_GET,
-            .handler   = door_open_handler, 
-            .user_ctx  = NULL
-        };
-        httpd_register_uri_handler(server, &door_open_uri);
-    }
 }
 
 void app_main() {
@@ -332,20 +322,6 @@ void app_main() {
 
     // Initialize Camera
     camera_init();
-
-    // Capture and upload picture periodically (example task) 
-    // for testing purposes 
-
-    // while (1) {
-    //     camera_fb_t *pic = esp_camera_fb_get();
-    //     ESP_LOGI(TAG_CAMERA, "*** took picture? ***");
-    //     if (pic) {
-    //         ESP_LOGI(TAG_CAMERA, "maybe took a picture yay");
-    //         // upload_picture(pic); // Upload captured image
-    //         esp_camera_fb_return(pic);
-    //     }
-    //     vTaskDelay(pdMS_TO_TICKS(10000)); // Delay 10 seconds between captures
-    // }
 
     // Configure the LEDC peripheral
     ledc_timer_config_t ledc_timer = {
@@ -365,28 +341,27 @@ void app_main() {
     };
     ledc_channel_config(&ledc_channel);
 
-    // for(int i=0; i<5; i++) {
-    //     // Spin forward for 3 full rotations (approx. 3 seconds per rotation)
-    //     set_servo_pulsewidth(SERVO_FORWARD_PULSEWIDTH_US);
-    //     vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-    //     set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-    //     vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
-
-    //     // Spin backward for 3 full rotations
-    //     set_servo_pulsewidth(SERVO_REVERSE_PULSEWIDTH_US);
-    //     vTaskDelay(pdMS_TO_TICKS(5000)); // 9 seconds for 3 rotations
-    //     set_servo_pulsewidth(SERVO_STOP_PULSEWIDTH_US); // Stop
-    //     vTaskDelay(pdMS_TO_TICKS(500)); // Pause for 1 second
-    // }
-
     // Initialize WiFi
     wifi_init_sta();
 
     // Start HTTP server
     start_http_server();
 
-    // Create button task to run concurrently with the main function
-    xTaskCreate(&button_task, "button_task", 4096, NULL, 5, NULL);
+    // Main loop
+    while (1) {
+        if (button_pressed) {
+            button_pressed=false;
+            ESP_LOGI(TAG_BUTTON, "Button pressed, taking picture");
+            take_picture();
+            vTaskDelay(5000 / portTICK_PERIOD_MS);  // Debounce delay for 5 seconds 
+        }
+        if (turn_motor) {
+            turn_motor = false;
+            ESP_LOGI(TAG_MOTOR, "Button pressed, moving motor");
+            open_door();
+        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
 }
 
 
